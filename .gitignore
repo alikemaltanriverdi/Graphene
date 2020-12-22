@@ -5,6 +5,7 @@ Homestead.yaml
 Homestead.json
 .env
 .vscode
+.idea/*
 
 # Don't Include Mustache Cache
 /storage/cache/mustache/*
