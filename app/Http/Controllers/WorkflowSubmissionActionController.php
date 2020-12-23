@@ -549,4 +549,30 @@ submitted by {{owner.first_name}} {{owner.last_name}}.<br><br>
             // Continue Anyway.
         }
     }
+    public function inactivity_cron(){
+        $submissions =  WorkflowSubmission::all()->where('status','open');
+        $all_instances = WorkflowInstance::all();
+        $w_instances=[];
+        $temp_instances = [];
+        foreach ($submissions as $submission){
+            $instance = $all_instances->where('id',$submission->workflow_instance_id)->first();
+            $instance->findVersion();
+//            $temp_instances[]=$instance->updated_at;
+            foreach($instance->workflow->code->flow as $state){
+                foreach ($state->actions as $action){
+                    if(isset($action->assignment) && $action->assignment->type ==='internal' &&
+                        isset($action->assignment->delay) && $submission->updated_at->diffInDays(Carbon::now()) >= $action->assignment->delay){
+                        $w_instances[] = [
+                            "assignment" => $action->assignment,
+                            "time" => Carbon::now(),
+                            "delay" => $action->assignment->delay,
+                            "updated_at" => $instance->updated_at->toDateTimeString(),
+                            "diff"=>$submission->updated_at->diffInDays(Carbon::now())
+                        ];
+                    }
+                }
+            }
+        }
+        return $w_instances;
+    }
 }
