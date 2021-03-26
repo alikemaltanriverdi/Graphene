@@ -19,3 +19,4 @@ config/database.php
 !.elasticbeanstalk/*.global.yml
 
 .idea
+.DS_Store
