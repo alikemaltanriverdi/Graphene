@@ -8,7 +8,7 @@ Homestead.json
 
 # Don't Include Mustache Cache
 /storage/cache/mustache/*
-!/storage/cache/mustache/.gitkeep
+!/storage/cache/mustache/.gitkeep 
 
 # Elastic Beanstalk Files
 .elasticbeanstalk/*
