@@ -33,9 +33,7 @@ use Storage;
 class WorkflowSubmissionActionController extends Controller {
     public function __construct() {
         // 01/19/2020, AKT - Authentication checks were moved to the public methods
-        // Reason: Internal function call from Kernel could not be able to have an authenticated user
-//        $this->customAuth = new CustomAuth();
-//        $this->resourceService = new ResourceService($this->customAuth);
+        // Reason: Internal function call from Kernel cannot have an authenticated user
     }
 
     public function create(WorkflowInstance $workflow_instance, Request $request,$save_or_submit='submit') {
@@ -76,13 +74,23 @@ class WorkflowSubmissionActionController extends Controller {
         }
     }
 
-    public function api_create(WorkflowInstance $workflow_instance, Request $request, $unique_id) {
-        $current_user = User::where('unique_id',$unique_id)->first();
-        if (is_null($current_user)) {
-            abort(404,'User '.$unique_id.' not found!');
+    public function api_create(WorkflowInstance $workflow_instance, Request $request, $unique_id, $start_state, $action) {
+
+        if ($request->has('enforce_permissions') && $request->enforce_permissions === 'false') {
+            // Don't check permissions!
+        } else {
+            $this->authorize('create_submission',$workflow_instance);
         }
-        Auth::login($current_user);
-        return $this->create($workflow_instance,$request,'submit');
+        $new_request = new Request();
+        $new_request->setMethod('POST');
+        $new_request->request->add([
+            '_flowstate' => $start_state,
+            '_state' => $request->has('data')?$request->data:(Object)[],
+            'action' => $action,
+            'comment' => $request->has('comment')?$request->comment:null,
+            'signature' => $request->has('signature')?$request->signature:null,
+        ]);
+        return $this->create($workflow_instance,$new_request,'submit');
     }
 
     private function detect_infinite_loop() {
@@ -112,6 +120,8 @@ class WorkflowSubmissionActionController extends Controller {
     public function action(WorkflowSubmission $workflow_submission, Request $request,$is_internal=false){
         //01/20/2021, AKT - Added the code below to check if the actions is taken internally
         //If not, then check for authentication
+        // This will be called multiple times when calling in logic blocks
+        // Please fix
         if(!$is_internal){
             $this->customAuth = new CustomAuth();
             $this->resourceService = new ResourceService($this->customAuth);
@@ -120,7 +130,6 @@ class WorkflowSubmissionActionController extends Controller {
         if ($this->detect_infinite_loop()) {
             return response('Infinite Loop Detected! Quitting!', 508);
         }
-
         $m = new \Mustache_Engine;
         $myWorkflowInstance = WorkflowInstance::with('workflow')->where('id', '=', $workflow_submission->workflow_instance_id)->first();
         $myWorkflowInstance->findVersion();
@@ -135,12 +144,9 @@ class WorkflowSubmissionActionController extends Controller {
         });
         $previous_status = $workflow_submission->status;
         // Get Action (Object)
-        // 01/05/2021, AKT - Changed request() to $request in order to be able to use request parameter sent to function
-        //added use($request) in the callback function to able to use the parameter
         $action = Arr::first($previous_state->actions, function ($value, $key) use ($request) {
             return $value->name === $request->get('action');
-        });
-
+        });  
         // Set New State (String)
         $workflow_submission->state = $action->to;   
         // Determine New State (Object) -- State we are entering
@@ -163,8 +169,7 @@ class WorkflowSubmissionActionController extends Controller {
         $state_data['owner']['is'] = [];
 
         // 01/05/2021, AKT - Added $is_internal the actor of the workflow
-        if (isset($previous_state->logic) || $is_internal
-        ) {
+        if (isset($previous_state->logic) || $is_internal) {
             $state_data['actor'] = null;
             $state_data['owner']['is']['actor'] = false;
         } else {
@@ -190,9 +195,6 @@ class WorkflowSubmissionActionController extends Controller {
         if (!isset($state->actions)) { $state->actions = []; }
         //01/20/2021, AKT - Replaced array_map with a foreach to avoid returned null values when nothing matches
         // This change was necessary in order to avoid internal or not actionable actions in the emails
-//        $state_data['actions'] = array_map(function ($ar) {
-//            return Arr::only((array)$ar,['label','name','type']);
-//        }, $state->actions);
         $state_data['actions']=[];
         foreach($state->actions as $ar){
             if(!isset($ar->assignment) || // See if an assignment is made for the action. If not, then add it to the list of actions
@@ -345,13 +347,18 @@ class WorkflowSubmissionActionController extends Controller {
         return WorkflowSubmission::with('workflowVersion')->with('workflow')->where('id', '=', $workflow_submission->id)->first();
     }
 
-    public function api_action(WorkflowSubmission $workflow_submission, Request $request, $unique_id) {
-        $current_user = User::where('unique_id',$unique_id)->first();
-        if (is_null($current_user)) {
-            abort(404,'User '.$unique_id.' not found!');
-        }
-        Auth::login($current_user);
-        return $this->action($workflow_submission,$request);
+    public function api_action(WorkflowSubmission $workflow_submission, Request $request, $unique_id, $action) {
+        $this->authorize('take_action',$workflow_submission);
+
+        $new_request = new Request();
+        $new_request->setMethod('PUT');
+        $new_request->request->add([
+            '_state' => $request->has('data')?$request->data:(Object)[],
+            'action' => $action,
+            'comment' => $request->has('comment')?$request->comment:null,
+            'signature' => $request->has('signature')?$request->signature:null,
+        ]);
+        return $this->action($workflow_submission,$new_request);
     }
 
     private function determineAssignment() {
@@ -492,7 +499,6 @@ class WorkflowSubmissionActionController extends Controller {
                 break;
                 case "purge_files":
                     $files = WorkflowSubmissionFile::where('workflow_submission_id',$workflow_submission->id)->get();
-
                     foreach($files as $file) {
                         Storage::delete($file->get_file_path());
                         Storage::delete($file->get_file_path().'.encrypted');
@@ -538,7 +544,6 @@ class WorkflowSubmissionActionController extends Controller {
     }
 
     private function send_default_emails($state_data) {
-//        dd($state_data);
         $m = new \Mustache_Engine;
         // Email Actor and Owner
         $email_body = '
@@ -648,10 +653,6 @@ submitted by {{owner.first_name}} {{owner.last_name}}.<br><br>
         $submissions =  WorkflowSubmission::where('status','open')->get();
         //Get all the workflow instances
         $all_instances = WorkflowInstance::get();
-
-        //Creating an array for development purposes
-//        $w_instances=[];
-
         foreach ($submissions as $submission){
             //Find the instance of the submission
             $instance = $all_instances->where('id',$submission->workflow_instance_id)->first();
@@ -660,6 +661,7 @@ submitted by {{owner.first_name}} {{owner.last_name}}.<br><br>
             if(isset($instance)){
                 //Calling findVersion function to get the related version information/ data
                 $instance->findVersion();
+                config(["app.site"=>$instance->group->site]);
 
                 //Getting the current state of the workflow
                 $state = Arr::first($instance->workflow->code->flow,function($value,$key) use ($submission){
@@ -676,7 +678,6 @@ submitted by {{owner.first_name}} {{owner.last_name}}.<br><br>
                                 $submission->updated_at->diffInDays(Carbon::now()) >= $action->assignment->delay && // Checks if the days past is equal to or bigger than the delay defined in the workflow
                                 isset($action->name) && !is_null($action->name)// Checks if the action's name is set
                             ) {
-
                                 $action_request = new Request();// Creating a new request
                                 $action_request->setMethod('PUT'); //Setting the request type to PUT
                                 $action_request->request->add([// Setting the request parameters
@@ -684,7 +685,13 @@ submitted by {{owner.first_name}} {{owner.last_name}}.<br><br>
                                     "comment" => "Automated ".$action->label." action was taken due to inactivity for ".$action->assignment->delay." days"
                                 ]);
                                 $submission->assignment_type = $action->assignment->type; // Setting the assignment type of the action
-                                $this->action($submission, $action_request, true); // runs the action method
+                                try {
+                                    $GLOBALS['action_stack_depth']=0; //To reset the global variable before every task. This is necessary for internal automated operations
+                                    $this->action($submission, $action_request, true); // runs the action method
+                                    }
+                                    catch(\Exception $e){
+                                        //Do nothing
+                                    }
                             }
                         }
                     }
