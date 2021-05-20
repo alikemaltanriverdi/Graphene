@@ -17,7 +17,6 @@
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-    RewriteRule / /page/welcome
 
     # BEGIN Allow Functionality for gziped CSS and JS Files
     # AddEncoding allows you to have certain browsers uncompress information on the fly.
